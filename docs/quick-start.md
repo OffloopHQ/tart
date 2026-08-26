@@ -154,32 +154,19 @@ sudo ufw allow ssh
 By default, a Tart VM uses 2 CPUs and 4 GB of memory with a `1024x768` display. This can be changed after VM creation with `tart set` command.
 Please refer to `tart set --help` for additional details.
 
-### Memory balloon (best-effort memory reclaim)
+### Freeing up memory (best-effort memory reclaim)
 
-A Tart VM reserves its configured memory size while running. Optionally, a virtio memory balloon device can be attached to the VM, which allows the host to ask the guest OS to release some of its memory:
+A Tart VM reserves its configured memory size while running. Linux VMs get a virtio memory balloon device attached automatically, which allows the host to ask the guest OS to release the memory it doesn't currently need.
 
-```bash
-tart set android-macos-builder --memory 16384
-tart set android-macos-builder --memory-balloon true
-tart run --no-graphics --net-bridged=en1 android-macos-builder
-```
-
-With the balloon device enabled, `tart run` accepts a target memory size (in megabytes) that the guest will be asked to shrink its memory footprint to:
-
-```bash
-tart run --balloon-target-memory 8192 android-macos-builder
-```
-
-Tart re-applies the target periodically while the VM runs, so the target also survives guest reboots.
+To make use of it, run a Linux VM with a graphical console and enable *Control* → *Free Up Memory*. The guest is then asked to shrink its memory footprint as much as it can, for as long as the option stays enabled (guest reboots included). Disabling it gives the memory back to the guest.
 
 Be aware of the following limitations:
 
 * **This is best-effort memory reclaim, not dynamic memory expansion.** It does not make a VM with 2 GB of real host memory appear as 32 GB to the guest. The guest still sees the configured memory size. It is also not memory hot-add and not transparent host memory overcommit.
-* **Guest OS support is required.** Linux guests generally ship with the `virtio_balloon` driver and are more likely to benefit. macOS guests may show limited or no practical memory reduction.
-* The guest may release less memory than requested, or none at all.
-* **Host-side reclaim may not be immediately visible.** Even when the guest reaches the target, macOS may keep the released guest memory resident and only reclaim it depending on the macOS version and the host memory pressure. The most reliable effect is on the guest side: the guest constrains its own memory usage to the target.
-* The balloon device is not attached when running a VM with `--suspendable`, to not interfere with the suspend/resume support.
-* There is currently no way to change the balloon target of an already running VM, since Tart has no host-side control channel to a running `tart run` process — the target can only be specified at `tart run` time.
+* **The guest may release less memory than asked for, or none at all**, depending on how much of its memory is actually reclaimable.
+* **Host-side reclaim may not be immediately visible.** Even when the guest reaches the target, macOS may keep the released guest memory resident and only reclaim it depending on the macOS version and the host memory pressure. The most reliable effect is on the guest side: the guest constrains its own memory usage.
+* macOS VMs don't get the balloon device, since macOS guests show little to no practical memory reduction.
+* VMs running with `--suspendable` don't get the balloon device either, to not interfere with the suspend/resume support.
 
 ## Mounting directories
 

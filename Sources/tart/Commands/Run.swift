@@ -289,20 +289,6 @@ struct Run: AsyncParsableCommand {
   @Flag(help: ArgumentHelp("Disable the pointer"))
   var noPointer: Bool = false
 
-  @Option(help: ArgumentHelp(
-    "Ask the guest to reduce its memory footprint to the target size in megabytes using the memory balloon device (e.g. --balloon-target-memory=8192)",
-    discussion: """
-    Requires the VM to have the memory balloon device enabled first:
-
-    tart set <name> --memory-balloon true
-
-    The reclaim is best-effort: the guest OS must support the virtio-balloon device and may release
-    less memory than requested, or none at all. Linux guests generally support it, while macOS guests
-    may show limited or no practical memory reduction. The guest still sees the full configured
-    memory size — this is not dynamic memory expansion nor transparent memory overcommit.
-    """, valueName: "MB"))
-  var balloonTargetMemory: UInt64?
-
   @Flag(help: ArgumentHelp("Disable the keyboard"))
   var noKeyboard: Bool = false
 
@@ -395,15 +381,6 @@ struct Run: AsyncParsableCommand {
       }
     }
 
-    if let balloonTargetMemory = balloonTargetMemory {
-      if suspendable {
-        throw ValidationError("--balloon-target-memory cannot be used with --suspendable")
-      }
-
-      let config = try VMConfig.init(fromURL: vmDir.configURL)
-      try Self.validateBalloonTargetMemory(balloonTargetMemory, vmConfig: config)
-    }
-
     #if arch(arm64) && compiler(>=6.4)
       if provisioningOpts != nil {
         if #unavailable(macOS 27) {
@@ -421,31 +398,6 @@ struct Run: AsyncParsableCommand {
       if disk.hasSuffix("-amd64.iso") {
         throw ValidationError("Seems you have a disk targeting x86 architecture (hence amd64 in the name). Please use an 'arm64' version of the disk.")
       }
-    }
-  }
-
-  static func validateBalloonTargetMemory(_ targetMemoryMB: UInt64, vmConfig: VMConfig) throws {
-    if !vmConfig.memoryBalloon {
-      throw ValidationError("--balloon-target-memory requires the VM to have the memory balloon device enabled,"
-        + " enable it via \"tart set <name> --memory-balloon true\"")
-    }
-
-    let (targetMemoryBytes, overflown) = targetMemoryMB.multipliedReportingOverflow(by: 1024 * 1024)
-    if overflown || targetMemoryBytes > vmConfig.memorySize {
-      throw ValidationError("--balloon-target-memory (\(targetMemoryMB) MB) cannot exceed the VM's"
-        + " configured memory size of \(vmConfig.memorySize / 1024 / 1024) MB")
-    }
-
-    var minimumAllowedMemorySize = VZVirtualMachineConfiguration.minimumAllowedMemorySize
-    if vmConfig.os == .darwin {
-      // macOS guests additionally have a minimum supported memory size
-      // dictated by the restore image they were created from, similarly
-      // to how "tart set --memory" restricts the configured memory size
-      minimumAllowedMemorySize = max(minimumAllowedMemorySize, vmConfig.memorySizeMin)
-    }
-    if targetMemoryBytes < minimumAllowedMemorySize {
-      throw ValidationError("--balloon-target-memory (\(targetMemoryMB) MB) is too small,"
-        + " it should be at least \(minimumAllowedMemorySize / 1024 / 1024) MB")
     }
   }
 
@@ -604,26 +556,6 @@ struct Run: AsyncParsableCommand {
           }
 
           throw error
-        }
-
-        if let balloonTargetMemory = balloonTargetMemory {
-          try vm!.setBalloonTargetMemory(balloonTargetMemory * 1024 * 1024)
-          print("asked the guest to reduce its memory footprint to \(balloonTargetMemory) MB"
-            + " (best-effort, requires guest OS support for the virtio-balloon device)")
-
-          // Keep re-applying the balloon target, since a target set before
-          // the guest's virtio-balloon driver has probed the device is lost
-          // when the guest resets the device while booting (the same applies
-          // to guest reboots)
-          Task {
-            while !Task.isCancelled {
-              try? await Task.sleep(nanoseconds: 15_000_000_000)
-
-              if vm!.virtualMachine.state == VZVirtualMachine.State.running {
-                try? vm!.setBalloonTargetMemory(balloonTargetMemory * 1024 * 1024)
-              }
-            }
-          }
         }
 
         if let vncImpl = vncImpl {
@@ -944,6 +876,12 @@ struct MainApp: App {
             }
           }
         }
+        // Only guests that support the virtio-balloon
+        // device get one, see VM.buildConfiguration()
+        if vm!.memoryBalloonDevice != nil {
+          Divider()
+          FreeUpMemory(vm: vm!)
+        }
       }
     }
   }
@@ -994,6 +932,19 @@ struct AboutTart: View {
         NSApplication.AboutPanelOptionKey.credits: credits,
       ])
     }
+  }
+}
+
+// Asks the guest to free up as much memory as possible for as
+// long as it's enabled, see VM.setMemoryBalloonInflated(_:)
+struct FreeUpMemory: View {
+  @ObservedObject var vm: VM
+
+  var body: some View {
+    Toggle("Free Up Memory", isOn: Binding(
+      get: { vm.memoryBalloonInflated },
+      set: { vm.setMemoryBalloonInflated($0) }
+    ))
   }
 }
 

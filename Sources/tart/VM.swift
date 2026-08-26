@@ -26,6 +26,13 @@ class VM: NSObject, VZVirtualMachineDelegate, ObservableObject {
   // Virtualization.Framework's virtual machine
   @Published var virtualMachine: VZVirtualMachine
 
+  // Whether the guest is currently asked to free up as much
+  // memory as possible, see setMemoryBalloonInflated(_:)
+  @Published var memoryBalloonInflated: Bool = false
+
+  // Task that re-applies the memory balloon target, see setMemoryBalloonInflated(_:)
+  private var balloonReinflationTask: Task<Void, Never>? = nil
+
   // Virtualization.Framework's virtual machine configuration
   var configuration: VZVirtualMachineConfiguration
 
@@ -255,14 +262,65 @@ class VM: NSObject, VZVirtualMachineDelegate, ObservableObject {
     }
   }
 
+  // Memory balloon device attached to this VM, if any.
+  //
+  // Only guests that support the virtio-balloon device get
+  // one, see buildConfiguration() below.
   @MainActor
-  func setBalloonTargetMemory(_ targetMemoryBytes: UInt64) throws {
-    guard let balloonDevice = virtualMachine.memoryBalloonDevices.first as? VZVirtioTraditionalMemoryBalloonDevice else {
-      throw RuntimeError.VMConfigurationError("VM has no memory balloon device configured,"
-        + " enable it via \"tart set \(name) --memory-balloon true\"")
+  var memoryBalloonDevice: VZVirtioTraditionalMemoryBalloonDevice? {
+    virtualMachine.memoryBalloonDevices.first as? VZVirtioTraditionalMemoryBalloonDevice
+  }
+
+  // The smallest memory size that the guest can be asked to shrink to.
+  //
+  // Virtualization.Framework rejects targets outside of the
+  // [minimumAllowedMemorySize, VM's configured memory size] range.
+  static func minimumBalloonTargetMemorySize(vmConfig: VMConfig) -> UInt64 {
+    min(VZVirtualMachineConfiguration.minimumAllowedMemorySize, vmConfig.memorySize)
+  }
+
+  // Asks the guest to free up as much memory as possible by inflating the
+  // memory balloon to the smallest target the host is allowed to request,
+  // or gives the memory back to the guest by deflating the balloon.
+  //
+  // This is best-effort: the guest OS may release less memory than asked
+  // for, or none at all.
+  @MainActor
+  func setMemoryBalloonInflated(_ inflated: Bool) {
+    guard let balloonDevice = memoryBalloonDevice else {
+      return
     }
 
-    balloonDevice.targetVirtualMachineMemorySize = targetMemoryBytes
+    balloonReinflationTask?.cancel()
+    balloonReinflationTask = nil
+
+    memoryBalloonInflated = inflated
+
+    guard inflated else {
+      balloonDevice.targetVirtualMachineMemorySize = config.memorySize
+
+      return
+    }
+
+    let target = VM.minimumBalloonTargetMemorySize(vmConfig: config)
+    balloonDevice.targetVirtualMachineMemorySize = target
+
+    // Keep re-applying the target, since a target set before the guest's
+    // virtio-balloon driver has probed the device is lost when the guest
+    // resets the device while booting (the same applies to guest reboots)
+    balloonReinflationTask = Task { @MainActor [weak self] in
+      while !Task.isCancelled {
+        try? await Task.sleep(nanoseconds: 15_000_000_000)
+
+        guard let self, !Task.isCancelled else {
+          break
+        }
+
+        if virtualMachine.state == .running {
+          memoryBalloonDevice?.targetVirtualMachineMemorySize = target
+        }
+      }
+    }
   }
 
   @MainActor
@@ -340,7 +398,7 @@ class VM: NSObject, VZVirtualMachineDelegate, ObservableObject {
     noPointer: Bool = false,
     noKeyboard: Bool = false
   ) throws -> VZVirtualMachineConfiguration {
-    let configuration = try buildConfiguration(diskURL: diskURL,
+    let configuration = try buildConfiguration(vmDir: vmDir,
                                                nvramURL: nvramURL, vmConfig: vmConfig,
                                                network: network, additionalStorageDevices: additionalStorageDevices,
                                                directorySharingDevices: directorySharingDevices,
@@ -365,7 +423,7 @@ class VM: NSObject, VZVirtualMachineDelegate, ObservableObject {
   // validation requires the "com.apple.security.virtualization" entitlement
   // that unit tests don't have
   static func buildConfiguration(
-    diskURL: URL,
+    vmDir: VMDirectory,
     nvramURL: URL,
     vmConfig: VMConfig,
     network: Network = NetworkShared(),
@@ -488,12 +546,14 @@ class VM: NSObject, VZVirtualMachineDelegate, ObservableObject {
 
     // Memory balloon
     //
-    // Allows the host to reclaim memory from the guest on a best-effort
-    // basis, provided that the guest OS supports the virtio-balloon device.
+    // Attached for Linux guests, which generally ship with the virtio_balloon
+    // driver and can thus be asked to free up memory on the host's request
+    // (see the "Free Up Memory" item in the "Control" menu).
     //
-    // Skipped for suspendable VMs (similarly to the entropy device above)
-    // to not interfere with the save/restore support.
-    if vmConfig.memoryBalloon && !suspendable {
+    // macOS guests are excluded because they show little to no practical
+    // memory reduction, and suspendable VMs are excluded (similarly to the
+    // entropy device above) to not interfere with the save/restore support.
+    if vmConfig.os == .linux && !suspendable {
       configuration.memoryBalloonDevices = [VZVirtioTraditionalMemoryBalloonDeviceConfiguration()]
     }
 
