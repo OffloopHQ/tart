@@ -289,6 +289,17 @@ struct Run: AsyncParsableCommand {
   @Flag(help: ArgumentHelp("Disable the pointer"))
   var noPointer: Bool = false
 
+  @Flag(help: ArgumentHelp(
+    "Dynamically reclaim guest memory when the host reports memory pressure.",
+    discussion: "The configured VM memory remains the upper bound. Normal pressure uses the full allocation, warning pressure requests 75%, and critical pressure requests the guest's safe minimum. Reclaim is best-effort and requires guest virtio-balloon support."))
+  var dynamicMemory: Bool = false
+
+  @Option(help: ArgumentHelp(
+    "Request a fixed guest memory target in megabytes through the memory balloon device.",
+    discussion: "Intended for validation and controlled workloads. The target must be between the guest's minimum supported memory and its configured memory size.",
+    valueName: "MB"))
+  var balloonTargetMemory: UInt64?
+
   @Flag(help: ArgumentHelp("Disable the keyboard"))
   var noKeyboard: Bool = false
 
@@ -338,6 +349,10 @@ struct Run: AsyncParsableCommand {
       throw ValidationError("--graphics and --no-graphics are mutually exclusive")
     }
 
+    if dynamicMemory && balloonTargetMemory != nil {
+      throw ValidationError("--dynamic-memory and --balloon-target-memory are mutually exclusive")
+    }
+
     if (noGraphics || vnc || vncExperimental) && captureSystemKeys {
       throw ValidationError("--captures-system-keys can only be used with the default VM view")
     }
@@ -371,6 +386,14 @@ struct Run: AsyncParsableCommand {
       if noPointer {
         throw ValidationError("--no-pointer cannot be used with --suspendable")
       }
+      if dynamicMemory || balloonTargetMemory != nil {
+        throw ValidationError("memory balloon control cannot be used with --suspendable")
+      }
+    }
+
+    if let balloonTargetMemory {
+      let config = try VMConfig.init(fromURL: vmDir.configURL)
+      try Self.validateBalloonTargetMemory(balloonTargetMemory, vmConfig: config)
     }
 
 
@@ -398,6 +421,17 @@ struct Run: AsyncParsableCommand {
       if disk.hasSuffix("-amd64.iso") {
         throw ValidationError("Seems you have a disk targeting x86 architecture (hence amd64 in the name). Please use an 'arm64' version of the disk.")
       }
+    }
+  }
+
+  static func validateBalloonTargetMemory(_ targetMemoryMB: UInt64, vmConfig: VMConfig) throws {
+    let (targetMemoryBytes, overflow) = targetMemoryMB.multipliedReportingOverflow(by: 1024 * 1024)
+    if overflow || targetMemoryBytes > vmConfig.memorySize {
+      throw ValidationError("--balloon-target-memory cannot exceed the VM's configured memory size of \(vmConfig.memorySize / 1024 / 1024) MB")
+    }
+    let minimum = VM.minimumBalloonTargetMemorySize(vmConfig: vmConfig)
+    if targetMemoryBytes < minimum {
+      throw ValidationError("--balloon-target-memory should be at least \(minimum / 1024 / 1024) MB")
     }
   }
 
@@ -474,7 +508,8 @@ struct Run: AsyncParsableCommand {
       caching: VZDiskImageCachingMode(diskOptions.cachingModeRaw),
       noTrackpad: noTrackpad,
       noPointer: noPointer,
-      noKeyboard: noKeyboard
+      noKeyboard: noKeyboard,
+      enableMemoryBalloon: dynamicMemory || balloonTargetMemory != nil
     )
 
     let vncImpl: VNC? = try {
@@ -556,6 +591,14 @@ struct Run: AsyncParsableCommand {
           }
 
           throw error
+        }
+
+        if dynamicMemory {
+          try vm!.enableDynamicMemoryBalloon()
+          print("dynamic memory balloon enabled with upper bound \(vm!.config.memorySize / 1024 / 1024) MB")
+        } else if let balloonTargetMemory {
+          try vm!.setMemoryBalloonTarget(balloonTargetMemory * 1024 * 1024)
+          print("requested fixed memory balloon target \(balloonTargetMemory) MB")
         }
 
         if let vncImpl = vncImpl {

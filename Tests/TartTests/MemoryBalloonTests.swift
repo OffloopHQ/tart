@@ -13,10 +13,16 @@ final class MemoryBalloonTests: XCTestCase {
     XCTAssertTrue(memoryBalloonDevices.first is VZVirtioTraditionalMemoryBalloonDeviceConfiguration)
   }
 
-  // macOS guests show little to no practical memory reduction,
-  // so there's no point in attaching the device to them
+  // macOS guests remain unchanged unless an operator explicitly opts into
+  // Offloop's experimental memory-pressure controller.
   func testNotAttachedForMacOSGuests() throws {
     XCTAssertEqual(try craftConfiguration(os: .darwin).memoryBalloonDevices.count, 0)
+  }
+
+  func testExplicitlyAttachedForMacOSGuests() throws {
+    let devices = try craftConfiguration(os: .darwin, enableMemoryBalloon: true).memoryBalloonDevices
+    XCTAssertEqual(devices.count, 1)
+    XCTAssertTrue(devices.first is VZVirtioTraditionalMemoryBalloonDeviceConfiguration)
   }
 
   // Similarly to the entropy device, the memory balloon device is not
@@ -44,7 +50,20 @@ final class MemoryBalloonTests: XCTestCase {
     XCTAssertEqual(VM.minimumBalloonTargetMemorySize(vmConfig: vmConfig), tinyMemorySize)
   }
 
-  private func craftConfiguration(os: OS = .linux, suspendable: Bool = false) throws -> VZVirtualMachineConfiguration {
+  func testDarwinDynamicTargetsRespectGuestMinimumAndUpperBound() throws {
+    var vmConfig = VMConfig(platform: Linux(), cpuCountMin: 1, memorySizeMin: 4096 * 1024 * 1024)
+    vmConfig.os = .darwin
+    try vmConfig.setMemory(memorySize: 8192 * 1024 * 1024)
+
+    XCTAssertEqual(VM.dynamicBalloonTargetMemorySize(level: .normal, vmConfig: vmConfig), 8192 * 1024 * 1024)
+    XCTAssertEqual(VM.dynamicBalloonTargetMemorySize(level: .warning, vmConfig: vmConfig), 6144 * 1024 * 1024)
+    XCTAssertEqual(VM.dynamicBalloonTargetMemorySize(level: .critical, vmConfig: vmConfig), 4096 * 1024 * 1024)
+    XCTAssertNoThrow(try Run.validateBalloonTargetMemory(4096, vmConfig: vmConfig))
+    XCTAssertThrowsError(try Run.validateBalloonTargetMemory(2048, vmConfig: vmConfig))
+    XCTAssertThrowsError(try Run.validateBalloonTargetMemory(8193, vmConfig: vmConfig))
+  }
+
+  private func craftConfiguration(os: OS = .linux, suspendable: Bool = false, enableMemoryBalloon: Bool = false) throws -> VZVirtualMachineConfiguration {
     let tmpDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: tmpDir) }
@@ -72,7 +91,8 @@ final class MemoryBalloonTests: XCTestCase {
       additionalStorageDevices: [],
       directorySharingDevices: [],
       serialPorts: [],
-      suspendable: suspendable
+      suspendable: suspendable,
+      enableMemoryBalloon: enableMemoryBalloon
     )
   }
 }

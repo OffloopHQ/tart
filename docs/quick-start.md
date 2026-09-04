@@ -165,7 +165,9 @@ Be aware of the following limitations:
 * **This is best-effort memory reclaim, not dynamic memory expansion.** It does not make a VM with 2 GB of real host memory appear as 32 GB to the guest. The guest still sees the configured memory size. It is also not memory hot-add and not transparent host memory overcommit.
 * **The guest may release less memory than asked for, or none at all**, depending on how much of its memory is actually reclaimable.
 * **Host-side reclaim may not be immediately visible.** Even when the guest reaches the target, macOS may keep the released guest memory resident and only reclaim it depending on the macOS version and the host memory pressure. The most reliable effect is on the guest side: the guest constrains its own memory usage.
-* macOS VMs don't get the balloon device, since macOS guests show little to no practical memory reduction.
+* macOS VMs don't get the balloon device by default. Offloop builds expose
+  `--dynamic-memory` and `--balloon-target-memory <MB>` for explicit,
+  evidence-gated macOS experiments; guest reclaim remains best-effort.
 * VMs running with `--suspendable` don't get the balloon device either, to not interfere with the suspend/resume support.
 
 ## Mounting directories

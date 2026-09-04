@@ -1,4 +1,5 @@
 import Foundation
+import Dispatch
 import Virtualization
 import Semaphore
 
@@ -32,6 +33,7 @@ class VM: NSObject, VZVirtualMachineDelegate, ObservableObject {
 
   // Task that re-applies the memory balloon target, see setMemoryBalloonInflated(_:)
   private var balloonReinflationTask: Task<Void, Never>? = nil
+  private var memoryPressureSource: (any DispatchSourceMemoryPressure)?
 
   // Virtualization.Framework's virtual machine configuration
   var configuration: VZVirtualMachineConfiguration
@@ -60,7 +62,8 @@ class VM: NSObject, VZVirtualMachineDelegate, ObservableObject {
        caching: VZDiskImageCachingMode? = nil,
        noTrackpad: Bool = false,
        noPointer: Bool = false,
-       noKeyboard: Bool = false
+       noKeyboard: Bool = false,
+       enableMemoryBalloon: Bool = false
   ) throws {
     name = vmDir.name
     config = try VMConfig.init(fromURL: vmDir.configURL)
@@ -84,7 +87,8 @@ class VM: NSObject, VZVirtualMachineDelegate, ObservableObject {
                                                 caching: caching,
                                                 noTrackpad: noTrackpad,
                                                 noPointer: noPointer,
-                                                noKeyboard: noKeyboard
+                                                noKeyboard: noKeyboard,
+                                                enableMemoryBalloon: enableMemoryBalloon
     )
     virtualMachine = VZVirtualMachine(configuration: configuration)
 
@@ -276,7 +280,70 @@ class VM: NSObject, VZVirtualMachineDelegate, ObservableObject {
   // Virtualization.Framework rejects targets outside of the
   // [minimumAllowedMemorySize, VM's configured memory size] range.
   static func minimumBalloonTargetMemorySize(vmConfig: VMConfig) -> UInt64 {
-    min(VZVirtualMachineConfiguration.minimumAllowedMemorySize, vmConfig.memorySize)
+    let frameworkMinimum = VZVirtualMachineConfiguration.minimumAllowedMemorySize
+    let guestMinimum = vmConfig.os == .darwin ? vmConfig.memorySizeMin : frameworkMinimum
+    return min(max(frameworkMinimum, guestMinimum), vmConfig.memorySize)
+  }
+
+  enum MemoryPressureLevel {
+    case normal
+    case warning
+    case critical
+  }
+
+  static func dynamicBalloonTargetMemorySize(level: MemoryPressureLevel, vmConfig: VMConfig) -> UInt64 {
+    let minimum = minimumBalloonTargetMemorySize(vmConfig: vmConfig)
+    switch level {
+    case .normal:
+      return vmConfig.memorySize
+    case .warning:
+      return max(minimum, vmConfig.memorySize * 3 / 4)
+    case .critical:
+      return minimum
+    }
+  }
+
+  @MainActor
+  func setMemoryBalloonTarget(_ targetMemoryBytes: UInt64) throws {
+    guard let balloonDevice = memoryBalloonDevice else {
+      throw RuntimeError.VMConfigurationError("VM has no memory balloon device configured")
+    }
+
+    balloonReinflationTask?.cancel()
+    balloonDevice.targetVirtualMachineMemorySize = targetMemoryBytes
+    balloonReinflationTask = Task { @MainActor [weak self] in
+      while !Task.isCancelled {
+        try? await Task.sleep(nanoseconds: 15_000_000_000)
+        guard let self, !Task.isCancelled else { break }
+        if virtualMachine.state == .running {
+          memoryBalloonDevice?.targetVirtualMachineMemorySize = targetMemoryBytes
+        }
+      }
+    }
+  }
+
+  @MainActor
+  func enableDynamicMemoryBalloon() throws {
+    guard memoryBalloonDevice != nil else {
+      throw RuntimeError.VMConfigurationError("VM has no memory balloon device configured")
+    }
+    let source = DispatchSource.makeMemoryPressureSource(eventMask: [.normal, .warning, .critical], queue: .main)
+    source.setEventHandler { [weak self, weak source] in
+      guard let self, let source else { return }
+      let level: MemoryPressureLevel
+      if source.data.contains(.critical) {
+        level = .critical
+      } else if source.data.contains(.warning) {
+        level = .warning
+      } else {
+        level = .normal
+      }
+      let target = Self.dynamicBalloonTargetMemorySize(level: level, vmConfig: config)
+      try? setMemoryBalloonTarget(target)
+    }
+    memoryPressureSource = source
+    source.activate()
+    try setMemoryBalloonTarget(Self.dynamicBalloonTargetMemorySize(level: .normal, vmConfig: config))
   }
 
   // Asks the guest to free up as much memory as possible by inflating the
@@ -396,7 +463,8 @@ class VM: NSObject, VZVirtualMachineDelegate, ObservableObject {
     caching: VZDiskImageCachingMode? = nil,
     noTrackpad: Bool = false,
     noPointer: Bool = false,
-    noKeyboard: Bool = false
+    noKeyboard: Bool = false,
+    enableMemoryBalloon: Bool = false
   ) throws -> VZVirtualMachineConfiguration {
     let configuration = try buildConfiguration(vmDir: vmDir,
                                                nvramURL: nvramURL, vmConfig: vmConfig,
@@ -411,7 +479,8 @@ class VM: NSObject, VZVirtualMachineDelegate, ObservableObject {
                                                caching: caching,
                                                noTrackpad: noTrackpad,
                                                noPointer: noPointer,
-                                               noKeyboard: noKeyboard
+                                               noKeyboard: noKeyboard,
+                                               enableMemoryBalloon: enableMemoryBalloon
     )
 
     try configuration.validate()
@@ -438,7 +507,8 @@ class VM: NSObject, VZVirtualMachineDelegate, ObservableObject {
     caching: VZDiskImageCachingMode? = nil,
     noTrackpad: Bool = false,
     noPointer: Bool = false,
-    noKeyboard: Bool = false
+    noKeyboard: Bool = false,
+    enableMemoryBalloon: Bool = false
   ) throws -> VZVirtualMachineConfiguration {
     let configuration = VZVirtualMachineConfiguration()
 
@@ -553,7 +623,7 @@ class VM: NSObject, VZVirtualMachineDelegate, ObservableObject {
     // macOS guests are excluded because they show little to no practical
     // memory reduction, and suspendable VMs are excluded (similarly to the
     // entropy device above) to not interfere with the save/restore support.
-    if vmConfig.os == .linux && !suspendable {
+    if (vmConfig.os == .linux || enableMemoryBalloon) && !suspendable {
       configuration.memoryBalloonDevices = [VZVirtioTraditionalMemoryBalloonDeviceConfiguration()]
     }
 
