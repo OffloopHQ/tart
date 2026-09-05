@@ -551,7 +551,7 @@ struct Run: AsyncParsableCommand {
 
     if memoryOvercommit {
       let maximum = VZVirtualMachineConfiguration.maximumAllowedOvercommittedMemorySize ?? 0
-      print("private memory overcommitment enabled (per-VM framework limit \(maximum / 1024 / 1024) MB)")
+      print("private memory overcommitment and pressure termination enabled (per-VM framework limit \(maximum / 1024 / 1024) MB)")
     }
 
     let vncImpl: VNC? = try {

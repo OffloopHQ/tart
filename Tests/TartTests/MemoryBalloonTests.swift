@@ -11,8 +11,10 @@ final class MemoryBalloonTests: XCTestCase {
 
     let configuration = VZVirtualMachineConfiguration()
     XCTAssertEqual(configuration.isMemoryOvercommitmentAllowed, false)
+    XCTAssertEqual(configuration.isTerminationUnderMemoryPressureEnabled, false)
     try configuration.allowMemoryOvercommitment()
     XCTAssertEqual(configuration.isMemoryOvercommitmentAllowed, true)
+    XCTAssertEqual(configuration.isTerminationUnderMemoryPressureEnabled, true)
     XCTAssertGreaterThan(
       VZVirtualMachineConfiguration.maximumAllowedOvercommittedMemorySize ?? 0,
       VZVirtualMachineConfiguration.maximumAllowedMemorySize
