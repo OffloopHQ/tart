@@ -300,6 +300,15 @@ struct Run: AsyncParsableCommand {
     valueName: "MB"))
   var balloonTargetMemory: UInt64?
 
+  @Option(parsing: .upToNextOption, help: ArgumentHelp(
+    "Apply a sequence of guest memory targets while the VM remains running.",
+    discussion: "Experimental validation mode. Values are megabytes and are applied in order at the configured interval.",
+    valueName: "MB ..."))
+  var balloonTargetMemorySequence: [UInt64] = []
+
+  @Option(help: "Seconds between memory targets in an experimental sequence.")
+  var balloonTargetIntervalSeconds: UInt64 = 60
+
   @Flag(help: ArgumentHelp("Disable the keyboard"))
   var noKeyboard: Bool = false
 
@@ -349,8 +358,14 @@ struct Run: AsyncParsableCommand {
       throw ValidationError("--graphics and --no-graphics are mutually exclusive")
     }
 
-    if dynamicMemory && balloonTargetMemory != nil {
-      throw ValidationError("--dynamic-memory and --balloon-target-memory are mutually exclusive")
+    let balloonControlModes = (dynamicMemory ? 1 : 0)
+      + (balloonTargetMemory == nil ? 0 : 1)
+      + (balloonTargetMemorySequence.isEmpty ? 0 : 1)
+    if balloonControlModes > 1 {
+      throw ValidationError("--dynamic-memory, --balloon-target-memory, and --balloon-target-memory-sequence are mutually exclusive")
+    }
+    if !balloonTargetMemorySequence.isEmpty && balloonTargetIntervalSeconds == 0 {
+      throw ValidationError("--balloon-target-interval-seconds must be greater than zero")
     }
 
     if (noGraphics || vnc || vncExperimental) && captureSystemKeys {
@@ -386,7 +401,7 @@ struct Run: AsyncParsableCommand {
       if noPointer {
         throw ValidationError("--no-pointer cannot be used with --suspendable")
       }
-      if dynamicMemory || balloonTargetMemory != nil {
+      if dynamicMemory || balloonTargetMemory != nil || !balloonTargetMemorySequence.isEmpty {
         throw ValidationError("memory balloon control cannot be used with --suspendable")
       }
     }
@@ -394,6 +409,12 @@ struct Run: AsyncParsableCommand {
     if let balloonTargetMemory {
       let config = try VMConfig.init(fromURL: vmDir.configURL)
       try Self.validateBalloonTargetMemory(balloonTargetMemory, vmConfig: config)
+    }
+    if !balloonTargetMemorySequence.isEmpty {
+      let config = try VMConfig.init(fromURL: vmDir.configURL)
+      for target in balloonTargetMemorySequence {
+        try Self.validateBalloonTargetMemory(target, vmConfig: config)
+      }
     }
 
 
@@ -509,7 +530,7 @@ struct Run: AsyncParsableCommand {
       noTrackpad: noTrackpad,
       noPointer: noPointer,
       noKeyboard: noKeyboard,
-      enableMemoryBalloon: dynamicMemory || balloonTargetMemory != nil
+      enableMemoryBalloon: dynamicMemory || balloonTargetMemory != nil || !balloonTargetMemorySequence.isEmpty
     )
 
     let vncImpl: VNC? = try {
@@ -599,6 +620,18 @@ struct Run: AsyncParsableCommand {
         } else if let balloonTargetMemory {
           try vm!.setMemoryBalloonTarget(balloonTargetMemory * 1024 * 1024)
           print("requested fixed memory balloon target \(balloonTargetMemory) MB")
+        } else if !balloonTargetMemorySequence.isEmpty {
+          let targets = balloonTargetMemorySequence
+          let interval = balloonTargetIntervalSeconds
+          Task { @MainActor in
+            for (index, target) in targets.enumerated() {
+              try vm!.setMemoryBalloonTarget(target * 1024 * 1024)
+              print("requested memory balloon sequence target \(target) MB (\(index + 1)/\(targets.count))")
+              if index + 1 < targets.count {
+                try? await Task.sleep(nanoseconds: interval * 1_000_000_000)
+              }
+            }
+          }
         }
 
         if let vncImpl = vncImpl {

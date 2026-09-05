@@ -63,6 +63,16 @@ final class MemoryBalloonTests: XCTestCase {
     XCTAssertThrowsError(try Run.validateBalloonTargetMemory(8193, vmConfig: vmConfig))
   }
 
+  func testSixteenGiBDarwinTargetSequenceValidation() throws {
+    var vmConfig = VMConfig(platform: Linux(), cpuCountMin: 1, memorySizeMin: 4096 * 1024 * 1024)
+    vmConfig.os = .darwin
+    try vmConfig.setMemory(memorySize: 16384 * 1024 * 1024)
+
+    for target in [16384, 12288, 8192, 16384] as [UInt64] {
+      XCTAssertNoThrow(try Run.validateBalloonTargetMemory(target, vmConfig: vmConfig))
+    }
+  }
+
   private func craftConfiguration(os: OS = .linux, suspendable: Bool = false, enableMemoryBalloon: Bool = false) throws -> VZVirtualMachineConfiguration {
     let tmpDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)

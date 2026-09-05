@@ -9,6 +9,11 @@ upper bound. `--dynamic-memory` requests the full allocation at normal host
 pressure, 75% at warning pressure, and the restore-image minimum at critical
 pressure. The target is re-applied after guest device resets.
 
+`--balloon-target-memory-sequence` with
+`--balloon-target-interval-seconds` is a validation-only control. It changes
+targets on one running VM so a benchmark can measure shrink and expansion
+without creating system-wide host memory pressure.
+
 This branch is experimental until a real macOS guest benchmark proves guest
 cooperation and a measurable reduction in host physical footprint without CI
 failure. It must not replace a production Tart binary based only on unit tests
