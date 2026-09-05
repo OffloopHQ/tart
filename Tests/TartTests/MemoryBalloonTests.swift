@@ -4,6 +4,21 @@ import XCTest
 @testable import tart
 
 final class MemoryBalloonTests: XCTestCase {
+  func testPrivateMemoryOvercommitmentRoundTripWhenAvailable() throws {
+    guard VZVirtualMachineConfiguration.supportsMemoryOvercommitment else {
+      throw XCTSkip("host Virtualization.framework has no private memory-overcommitment setting")
+    }
+
+    let configuration = VZVirtualMachineConfiguration()
+    XCTAssertEqual(configuration.isMemoryOvercommitmentAllowed, false)
+    try configuration.allowMemoryOvercommitment()
+    XCTAssertEqual(configuration.isMemoryOvercommitmentAllowed, true)
+    XCTAssertGreaterThan(
+      VZVirtualMachineConfiguration.maximumAllowedOvercommittedMemorySize ?? 0,
+      VZVirtualMachineConfiguration.maximumAllowedMemorySize
+    )
+  }
+
   // Linux guests generally ship with the virtio_balloon driver,
   // so they get the memory balloon device out of the box
   func testAttachedForLinuxGuests() throws {

@@ -309,6 +309,12 @@ struct Run: AsyncParsableCommand {
   @Option(help: "Seconds between memory targets in an experimental sequence.")
   var balloonTargetIntervalSeconds: UInt64 = 60
 
+  @Flag(help: ArgumentHelp(
+    "Allow the VM's configured memory to exceed host physical memory.",
+    discussion: "Experimental Offloop mode backed by the host Virtualization.framework's private memory-overcommitment configuration.",
+    visibility: .private))
+  var memoryOvercommit: Bool = false
+
   @Flag(help: ArgumentHelp("Disable the keyboard"))
   var noKeyboard: Bool = false
 
@@ -382,6 +388,15 @@ struct Run: AsyncParsableCommand {
 
     let localStorage = try VMStorageLocal()
     let vmDir = try localStorage.open(name)
+    if memoryOvercommit {
+      let config = try VMConfig.init(fromURL: vmDir.configURL)
+      if config.os != .darwin {
+        throw ValidationError("--memory-overcommit can only be used with macOS VMs")
+      }
+      if !VZVirtualMachineConfiguration.supportsMemoryOvercommitment {
+        throw ValidationError("--memory-overcommit is unavailable on this host Virtualization.framework")
+      }
+    }
     if try vmDir.state() == .Suspended {
       suspendable = true
     }
@@ -530,8 +545,14 @@ struct Run: AsyncParsableCommand {
       noTrackpad: noTrackpad,
       noPointer: noPointer,
       noKeyboard: noKeyboard,
-      enableMemoryBalloon: dynamicMemory || balloonTargetMemory != nil || !balloonTargetMemorySequence.isEmpty
+      enableMemoryBalloon: dynamicMemory || balloonTargetMemory != nil || !balloonTargetMemorySequence.isEmpty,
+      allowMemoryOvercommitment: memoryOvercommit
     )
+
+    if memoryOvercommit {
+      let maximum = VZVirtualMachineConfiguration.maximumAllowedOvercommittedMemorySize ?? 0
+      print("private memory overcommitment enabled (per-VM framework limit \(maximum / 1024 / 1024) MB)")
+    }
 
     let vncImpl: VNC? = try {
       if vnc {

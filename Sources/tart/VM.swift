@@ -63,7 +63,8 @@ class VM: NSObject, VZVirtualMachineDelegate, ObservableObject {
        noTrackpad: Bool = false,
        noPointer: Bool = false,
        noKeyboard: Bool = false,
-       enableMemoryBalloon: Bool = false
+       enableMemoryBalloon: Bool = false,
+       allowMemoryOvercommitment: Bool = false
   ) throws {
     name = vmDir.name
     config = try VMConfig.init(fromURL: vmDir.configURL)
@@ -88,7 +89,8 @@ class VM: NSObject, VZVirtualMachineDelegate, ObservableObject {
                                                 noTrackpad: noTrackpad,
                                                 noPointer: noPointer,
                                                 noKeyboard: noKeyboard,
-                                                enableMemoryBalloon: enableMemoryBalloon
+                                                enableMemoryBalloon: enableMemoryBalloon,
+                                                allowMemoryOvercommitment: allowMemoryOvercommitment
     )
     virtualMachine = VZVirtualMachine(configuration: configuration)
 
@@ -464,7 +466,8 @@ class VM: NSObject, VZVirtualMachineDelegate, ObservableObject {
     noTrackpad: Bool = false,
     noPointer: Bool = false,
     noKeyboard: Bool = false,
-    enableMemoryBalloon: Bool = false
+    enableMemoryBalloon: Bool = false,
+    allowMemoryOvercommitment: Bool = false
   ) throws -> VZVirtualMachineConfiguration {
     let configuration = try buildConfiguration(vmDir: vmDir,
                                                nvramURL: nvramURL, vmConfig: vmConfig,
@@ -480,7 +483,8 @@ class VM: NSObject, VZVirtualMachineDelegate, ObservableObject {
                                                noTrackpad: noTrackpad,
                                                noPointer: noPointer,
                                                noKeyboard: noKeyboard,
-                                               enableMemoryBalloon: enableMemoryBalloon
+                                               enableMemoryBalloon: enableMemoryBalloon,
+                                               allowMemoryOvercommitment: allowMemoryOvercommitment
     )
 
     try configuration.validate()
@@ -508,7 +512,8 @@ class VM: NSObject, VZVirtualMachineDelegate, ObservableObject {
     noTrackpad: Bool = false,
     noPointer: Bool = false,
     noKeyboard: Bool = false,
-    enableMemoryBalloon: Bool = false
+    enableMemoryBalloon: Bool = false,
+    allowMemoryOvercommitment: Bool = false
   ) throws -> VZVirtualMachineConfiguration {
     let configuration = VZVirtualMachineConfiguration()
 
@@ -518,6 +523,9 @@ class VM: NSObject, VZVirtualMachineDelegate, ObservableObject {
     // CPU and memory
     configuration.cpuCount = vmConfig.cpuCount
     configuration.memorySize = vmConfig.memorySize
+    if allowMemoryOvercommitment {
+      try configuration.allowMemoryOvercommitment()
+    }
 
     // Platform
     configuration.platform = try vmConfig.platform.platform(nvramURL: nvramURL, needsNestedVirtualization: nested)
