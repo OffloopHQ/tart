@@ -69,3 +69,33 @@ The 16 GiB maximum therefore does not make this controller safe. Do not deploy
 this branch to managed macOS CI runners. A future experiment needs a guest or
 framework version that both cooperates with the balloon device and exposes
 host-side reclaim evidence while continuous guest health probes remain green.
+
+## 2026-09-05 root cause and replacement
+
+The Tahoe guest does load one active `AppleVirtIOBalloon` from
+`com.apple.driver.AppleVirtIO`. The failure is a page-accounting mismatch:
+Virtio balloon PFNs use fixed 4 KiB units, while the arm64 macOS guest uses 16
+KiB VM pages. With a 16 GiB guest, a 15 GiB framework target increased guest
+wired pages from 60,893 to 339,403, about 4.25 GiB. Repeating the same target
+was idempotent, confirming that the four-times inflation is not caused by
+Tart's 15-second reapplication.
+
+A delayed one-shot 12 GiB target still made the guest unreachable within 15
+seconds after two minutes of stable uptime. Restoring the framework target to
+16 GiB did not deflate the balloon. Guest memory pressure produced compression
+and swap while balloon wired pages stayed allocated. Calibrating a desired 4
+GiB guest reclaim to a 1 GiB framework request therefore costs the guest about
+4 GiB while returning only about the requested 1 GiB to the host. The current
+Apple driver cannot provide efficient, reversible macOS overcommit.
+
+The validated replacement keeps the checksum-pinned upstream Tart 2.35.0
+binary. On the 64 GiB McIntosh host, two concurrent official Tart guests were
+configured with 16 GiB each while a bounded allocator touched another 24 GiB.
+macOS host compression absorbed the overlap without increasing swap. Both
+guests retained authenticated SSH and independently completed the repository
+Xcode canary by booting an iPhone 17 Pro Simulator. Cleanup left only the
+pinned OCI source image.
+
+Do not compensate or release this balloon branch. Use host-owned compression
+and paging with two ephemeral 16 GiB guests on hosts with at least 64 GiB;
+smaller hosts retain the 8 GiB baseline.
