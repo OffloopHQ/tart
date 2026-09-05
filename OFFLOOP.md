@@ -99,3 +99,40 @@ pinned OCI source image.
 Do not compensate or release this balloon branch. Use host-owned compression
 and paging with two ephemeral 16 GiB guests on hosts with at least 64 GiB;
 smaller hosts retain the 8 GiB baseline.
+
+## 2026-09-05 aggregate overcommit validation
+
+Virtualization.framework on the same 64 GiB host exposes the private selectors
+`_memoryOvercommitmentAllowed`, `_terminationUnderMemoryPressureEnabled`, and
+`_maximumAllowedOvercommittedMemorySize`. The public per-VM maximum was 64 GiB
+and the private reported maximum was 1,030,400 MiB. A fork experiment could set
+and read back both private booleans, and a 66 GiB configuration then passed
+validation instead of being rejected by `maximumAllowedMemorySize`. It still
+failed to start with `VZErrorDomain Code=1`. A 40 GiB VM also failed to start
+when the same private settings were enabled. Passing configuration validation
+is therefore not a runtime overcommit receipt, and the private settings are not
+part of the Offloop fork.
+
+The useful behavior is already present without either private setting or a
+balloon. Checksum-pinned upstream Tart 2.35.0 started two ordinary Tahoe/Xcode
+guests configured for 40 GiB each on the 64 GiB host, for an 80 GiB aggregate
+configured maximum. Both guests reported the full 40 GiB through `hw.memsize`,
+retained authenticated SSH, and concurrently booted and deleted an iPhone 17
+Pro Simulator with Xcode 26.5.
+
+At idle, the two Apple Virtualization helper processes had physical footprints
+of 21,772,305,408 and 21,976,024,376 bytes, well below their configured maxima.
+After both Simulator canaries completed, their physical footprints had grown
+to 35,941,505,648 and 36,076,984,992 bytes while resident memory was only
+14,504,951,808 and 14,468,464,640 bytes. The host compressor held 1,536,040
+16-KiB pages, about 23.44 GiB. Swap remained 12.19 MiB and the host's cumulative
+swapout count remained 3,339. Both guests still reported 94% free memory. Every
+test VM was stopped and deleted, leaving only the pinned OCI source image.
+
+This is the supported overcommit boundary for Offloop: multiple fixed-maximum
+VMs may have aggregate configured memory above host physical memory while
+macOS accounts, compresses, and pages their actual resident working sets. It
+does not provide a hard per-VM current-memory value or a host-triggered page
+reclaim receipt. Keep the 16 GiB per-job maximum and the two-job concurrency
+limit on 64 GiB production hosts; measured working-set overlap, host pressure,
+and workload health remain the admission evidence.
