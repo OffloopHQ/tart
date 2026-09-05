@@ -41,3 +41,31 @@ image. The dynamic controller is therefore **not approved for release**: a host
 warning or critical pressure event would apply the same unsafe target. Revisit
 only after a newer macOS guest or Virtualization.framework release provides a
 measurable reclaim receipt without guest availability loss.
+
+## 2026-09-05 16 GiB shrink-and-restore benchmark
+
+The validation sequence in commit `a9b0162adf2b4c66fb95c7057ff864fdfad989b1`
+was exercised on the same `Mac16,11` host and pinned Tahoe/Xcode guest, now
+configured for 4 vCPU and 16 GiB RAM. `MemoryBalloonTests` passed 8/8. The VM
+remained running while Tart applied `16384 -> 12288 -> 8192 -> 16384` MiB at
+60-second intervals.
+
+| Requested target | Guest result | Host Tart RSS / footprint |
+| --- | --- | --- |
+| 16,384 MiB baseline | SSH healthy; `hw.memsize=17179869184`; memory free 94% | 47,280 KiB / 14.0 MiB |
+| 12,288 MiB | SSH banner timed out | 47,312 KiB / 14.0 MiB |
+| 8,192 MiB | SSH connection timed out | 47,328 KiB / 14.0 MiB |
+| 16,384 MiB restored | SSH still timed out after the target change and a further 32-second settle | 47,296-47,344 KiB / 14.0 MiB |
+
+Host memory pressure reported 96% free before and after the run. Tart process
+RSS is not a complete accounting of Virtualization.framework guest memory, but
+neither it nor the available host-wide pressure sample provides a reclaim
+receipt for either shrink target. More importantly, the first 4 GiB shrink made
+the guest unavailable and restoring the configured upper bound did not recover
+it. The benchmark VM was then stopped and deleted, leaving only the pinned OCI
+source image.
+
+The 16 GiB maximum therefore does not make this controller safe. Do not deploy
+this branch to managed macOS CI runners. A future experiment needs a guest or
+framework version that both cooperates with the balloon device and exposes
+host-side reclaim evidence while continuous guest health probes remain green.
